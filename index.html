@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Driver Search — Dispatch</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f1117; font-family: 'Segoe UI', sans-serif; }
+    @keyframes ripple {
+      0%   { r: 20;  opacity: 0.8; }
+      100% { r: 260; opacity: 0; }
+    }
+    @keyframes dPulse {
+      from { r: 22; opacity: 0.2; }
+      to   { r: 32; opacity: 0.04; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    const W = 580, H = 540;
+    const CX = W / 2, CY = H / 2;
+    const R = 72;
+
+    function hexToPixel(q, r) {
+      return {
+        x: CX + R * (3/2 * q),
+        y: CY + R * (Math.sqrt(3)/2 * q + Math.sqrt(3) * r)
+      };
+    }
+
+    function hexCorners(cx, cy, r) {
+      return Array.from({ length: 6 }, (_, i) => {
+        const a = (Math.PI / 3) * i;
+        return `${cx + r * Math.cos(a)},${cy + r * Math.sin(a)}`;
+      }).join(" ");
+    }
+
+    const hexGrid = [
+      { q: 0, r: 0, ring: 0 },
+      { q: 1, r: 0, ring: 1 }, { q: 1, r: -1, ring: 1 },
+      { q: 0, r: -1, ring: 1 }, { q: -1, r: 0, ring: 1 },
+      { q: -1, r: 1, ring: 1 }, { q: 0, r: 1, ring: 1 },
+      { q: 2, r: 0, ring: 2 }, { q: 2, r: -1, ring: 2 }, { q: 2, r: -2, ring: 2 },
+      { q: 1, r: -2, ring: 2 }, { q: 0, r: -2, ring: 2 }, { q: -1, r: -1, ring: 2 },
+      { q: -2, r: 0, ring: 2 }, { q: -2, r: 1, ring: 2 }, { q: -2, r: 2, ring: 2 },
+      { q: -1, r: 2, ring: 2 }, { q: 0, r: 2, ring: 2 }, { q: 1, r: 1, ring: 2 },
+    ].map((h, i) => ({ ...h, id: i, center: hexToPixel(h.q, h.r) }));
+
+    const DRIVERS = [
+      { id: 0, hexId: 0, order: 1, offset: { x: 22, y: -10 } },
+      { id: 1, hexId: 4, order: 2, offset: { x: 0, y: 0 } },
+      { id: 2, hexId: 8, order: 3, offset: { x: 0, y: 0 } },
+      { id: 3, hexId: 13, order: 4, offset: { x: 0, y: 0 } },
+      { id: 4, hexId: 17, order: 5, offset: { x: 0, y: 0 } },
+    ];
+
+    const STAGES = [
+      { label: "Order created", desc: "Passenger created a ride. The system starts searching in the passenger's hex.", searchRing: -1 },
+      { label: "Searching in passenger's hex", desc: "A driver was found right inside the passenger's hex — signal sent.", searchRing: 0, signal: 1 },
+      { label: "Driver #1 — no response", desc: "40 sec timer expired. Driver did not react. Passing to the next one.", searchRing: 0, driverStatus: { 1: "missed" } },
+      { label: "Expanding to adjacent hexes", desc: "No available drivers in passenger's hex. Search expands to neighbouring hexes.", searchRing: 1 },
+      { label: "Driver #2 — no response", desc: "Signal sent to the nearest driver in adjacent hexes. No reaction.", searchRing: 1, signal: 2, driverStatus: { 1: "missed", 2: "missed" } },
+      { label: "Expanding further", desc: "Search continues — system moves to the outer ring of hexes.", searchRing: 2 },
+      { label: "Driver #3 is calling!", desc: "Driver in the outer hex pressed «Call». Talking to the passenger now.", searchRing: 2, signal: 3, driverStatus: { 1: "missed", 2: "missed", 3: "calling" } },
+      { label: "Deal confirmed ✅", desc: "Both confirmed the agreement. Order is assigned to the driver!", searchRing: 2, driverStatus: { 1: "missed", 2: "missed", 3: "matched" } },
+    ];
+
+    const driverColors = { idle: "#3a3d55", ringing: "#F5A623", missed: "#E74C3C", calling: "#4A90D9", matched: "#27AE60" };
+    const driverIcons  = { idle: "🚗", ringing: "📳", missed: "✗", calling: "📞", matched: "✅" };
+    const ringColor = { 0: "#4A90D9", 1: "#7B68EE", 2: "#50C878" };
+
+    function btnStyle(color, disabled) {
+      return {
+        background: disabled ? "#1a1d2e" : color + "22",
+        border: `1.5px solid ${disabled ? "#2a2d3e" : color}`,
+        color: disabled ? "#555" : "#fff",
+        borderRadius: 8, padding: "8px 16px", fontSize: 13,
+        cursor: disabled ? "default" : "pointer", fontWeight: 600,
+        transition: "all 0.2s"
+      };
+    }
+
+    function App() {
+      const [stage, setStage] = useState(0);
+      const [autoPlay, setAutoPlay] = useState(false);
+      const timerRef = useRef(null);
+
+      useEffect(() => {
+        if (autoPlay) {
+          timerRef.current = setInterval(() => {
+            setStage(s => {
+              if (s >= STAGES.length - 1) { setAutoPlay(false); return s; }
+              return s + 1;
+            });
+          }, 2200);
+        }
+        return () => clearInterval(timerRef.current);
+      }, [autoPlay]);
+
+      const st = STAGES[stage];
+      const searchRing = st.searchRing;
+      const driverStatus = st.driverStatus || {};
+      const signalDriverOrder = st.signal;
+      const isSuccess = stage === STAGES.length - 1;
+      const activeColor = searchRing >= 0 ? ringColor[searchRing] : "#4A90D9";
+
+      function getDriverState(d) {
+        if (driverStatus[d.order]) return driverStatus[d.order];
+        if (signalDriverOrder === d.order) return "ringing";
+        return "idle";
+      }
+
+      return (
+        <div style={{ background: "#0f1117", minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", padding: "20px 12px", color: "#fff" }}>
+          <h2 style={{ margin: "0 0 2px", fontSize: 17 }}>Driver Search — Dispatch</h2>
+          <p style={{ color: "#888", fontSize: 12, margin: "0 0 14px" }}>Intercity / order distribution algorithm</p>
+
+          <div style={{ width: "100%", maxWidth: W }}>
+            <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: "block" }}>
+              <defs>
+                <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+                  <feGaussianBlur stdDeviation="6" result="blur"/>
+                  <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+                <filter id="softglow" x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="3" result="blur"/>
+                  <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+                <radialGradient id="bg" cx="50%" cy="50%">
+                  <stop offset="0%" stopColor="#161b2e"/>
+                  <stop offset="100%" stopColor="#0f1117"/>
+                </radialGradient>
+              </defs>
+              <rect width={W} height={H} fill="url(#bg)"/>
+
+              {hexGrid.map(h => {
+                const isCenter = h.ring === 0;
+                const isCurrentRing = h.ring === searchRing && searchRing > 0;
+                const wasSearched = searchRing > 0 && h.ring > 0 && h.ring < searchRing;
+                let fill = "#11141f", stroke = "#1c2030", strokeW = 1, filterAttr = undefined;
+                if (isCenter) { fill = "#0d1e36"; stroke = "#4A90D9"; strokeW = 2; filterAttr = "url(#softglow)"; }
+                else if (isCurrentRing) { fill = "#181c2e"; stroke = ringColor[searchRing]; strokeW = 2; filterAttr = "url(#softglow)"; }
+                else if (wasSearched) { fill = "#131620"; stroke = "#252840"; }
+                return <polygon key={h.id} points={hexCorners(h.center.x, h.center.y, R - 2)} fill={fill} stroke={stroke} strokeWidth={strokeW} filter={filterAttr}/>;
+              })}
+
+              {searchRing >= 0 && [0,1,2].map(i => (
+                <circle key={i} cx={CX} cy={CY} r={10} fill="none" stroke={activeColor} strokeWidth={1.5} opacity={0}
+                  style={{ animation: `ripple 2.2s ${i * 0.6}s ease-out infinite` }}/>
+              ))}
+
+              {signalDriverOrder && (() => {
+                const d = DRIVERS.find(dr => dr.order === signalDriverOrder);
+                const hex = hexGrid.find(h => h.id === d.hexId);
+                const dx = hex.center.x + d.offset.x;
+                const dy = hex.center.y + d.offset.y;
+                const ds = getDriverState(d);
+                const lc = ds === "calling" ? "#4A90D9" : ds === "missed" ? "#E74C3C" : "#F5A623";
+                return <line x1={CX} y1={CY} x2={dx} y2={dy} stroke={lc} strokeWidth={1.5} strokeDasharray="5 4" opacity={0.7}/>;
+              })()}
+
+              {DRIVERS.map(d => {
+                const hex = hexGrid.find(h => h.id === d.hexId);
+                const px = hex.center.x + d.offset.x;
+                const py = hex.center.y + d.offset.y;
+                const ds = getDriverState(d);
+                const color = driverColors[ds];
+                const icon = driverIcons[ds];
+                const active = ds === "ringing" || ds === "calling";
+                return (
+                  <g key={d.id}>
+                    {active && <circle cx={px} cy={py} r={28} fill={color} opacity={0} style={{ animation: "dPulse 1s ease-in-out infinite alternate" }}/>}
+                    <circle cx={px} cy={py} r={20} fill={ds === "idle" ? "#191c2e" : color + "25"} stroke={color} strokeWidth={active ? 2.5 : 1.5} filter={active ? "url(#glow)" : undefined}/>
+                    <text x={px} y={py + 1} textAnchor="middle" dominantBaseline="middle" fontSize={15}>{icon}</text>
+                    <text x={px} y={py + 28} textAnchor="middle" fontSize={9} fill={color} fontWeight="700">#{d.order}</text>
+                  </g>
+                );
+              })}
+
+              <g>
+                <circle cx={CX} cy={CY} r={22} fill={isSuccess ? "#27AE6033" : "#0d1f3c"} stroke={isSuccess ? "#27AE60" : "#4A90D9"} strokeWidth={2.5} filter="url(#glow)"/>
+                <text x={CX} y={CY + 1} textAnchor="middle" dominantBaseline="middle" fontSize={18}>{isSuccess ? "🎉" : "🧍"}</text>
+                <text x={CX} y={CY - 30} textAnchor="middle" fontSize={10} fill="#4A90D9" fontWeight="700">point A</text>
+              </g>
+
+              {searchRing >= 1 && <text x={CX + R * 1.75} y={CY - R * 1.1} textAnchor="middle" fontSize={9} fill="#7B68EE" opacity={0.8}>adjacent</text>}
+              {searchRing >= 2 && <text x={CX + R * 3.1} y={CY - R * 0.5} textAnchor="middle" fontSize={9} fill="#50C878" opacity={0.8}>outer</text>}
+            </svg>
+          </div>
+
+          <div style={{ width: "100%", maxWidth: W, background: "#1a1d2e", border: `2px solid ${isSuccess ? "#27AE60" : activeColor}`, borderRadius: 12, padding: "14px 18px", marginTop: 8, transition: "border-color 0.4s" }}>
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 1, color: "#777", marginBottom: 4 }}>Step {stage + 1} / {STAGES.length}</div>
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>{st.label}</div>
+            <div style={{ fontSize: 13, color: "#aaa", lineHeight: 1.5 }}>{st.desc}</div>
+          </div>
+
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10, maxWidth: W, width: "100%", justifyContent: "center" }}>
+            {[["#4A90D9","Passenger's hex"], ["#7B68EE","Adjacent hexes"], ["#50C878","Outer hexes"]].map(([c, l]) => (
+              <div key={l} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#aaa" }}>
+                <div style={{ width: 8, height: 8, borderRadius: 2, background: c }}/>{l}
+              </div>
+            ))}
+            {[["#F5A623","📳 Signal"], ["#E74C3C","✗ No response"], ["#4A90D9","📞 Calling"], ["#27AE60","✅ Confirmed"]].map(([c, l]) => (
+              <div key={l} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#aaa" }}>
+                <div style={{ width: 8, height: 8, borderRadius: "50%", background: c }}/>{l}
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+            <button onClick={() => { setStage(0); setAutoPlay(false); }} style={btnStyle("#555")}>↺</button>
+            <button onClick={() => setStage(s => Math.max(s-1, 0))} disabled={stage===0} style={btnStyle("#7B68EE", stage===0)}>← Back</button>
+            <button onClick={() => setAutoPlay(a => !a)} style={btnStyle(autoPlay ? "#E74C3C" : "#50C878")}>{autoPlay ? "⏸ Stop" : "▶ Auto"}</button>
+            <button onClick={() => setStage(s => Math.min(s+1, STAGES.length-1))} disabled={stage===STAGES.length-1} style={btnStyle("#7B68EE", stage===STAGES.length-1)}>Next →</button>
+          </div>
+
+          <div style={{ display: "flex", gap: 6, marginTop: 12, marginBottom: 20 }}>
+            {STAGES.map((_, i) => (
+              <div key={i} onClick={() => setStage(i)} style={{ width: i===stage ? 22 : 8, height: 8, borderRadius: 4, background: i<=stage ? activeColor : "#2a2d3e", cursor: "pointer", transition: "all 0.3s" }}/>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+  </script>
+</body>
+</html>
